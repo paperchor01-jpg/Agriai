@@ -155,7 +155,8 @@ async function runAiDeduplicationLoad(concurrency: number): Promise<LatencyStats
 
 async function main() {
   console.log('\n======================================================================');
-  console.log('       AgriAI High-Concurrency Load Simulation & Benchmark');
+  console.log('       AgriAI High-Concurrency Load Simulation & Benchmark [LOCAL BENCHMARK]');
+  console.log('       Tested on Node.js/Next.js Core Architecture Primitives');
   console.log('======================================================================\n');
 
   const tiers = [100, 500, 1000];

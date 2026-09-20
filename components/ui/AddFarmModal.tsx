@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { X, Sprout, MapPin, Layers, Droplets, Calendar, CheckCircle2 } from "lucide-react";
+import { X, Sprout, Calendar, CheckCircle2 } from "lucide-react";
 import { Farm, FarmLocationDetails } from "@/types";
 import { FarmLocationSelector } from "@/components/location/FarmLocationSelector";
 

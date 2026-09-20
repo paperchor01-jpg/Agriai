@@ -64,6 +64,7 @@ export function FarmFormModal({
   // Validation errors
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [activeTab, setActiveTab] = useState<'general' | 'soil' | 'crop' | 'practices'>('general');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
     if (initialFarm) {
@@ -138,6 +139,7 @@ export function FarmFormModal({
     }
     setErrors({});
     setActiveTab('general');
+    setIsSubmitting(false);
   }, [initialFarm, isOpen]);
 
   if (!isOpen) return null;
@@ -182,6 +184,8 @@ export function FarmFormModal({
       }
       return;
     }
+
+    setIsSubmitting(true);
 
     const area = parseFloat(areaAcres);
     const phNum = parseFloat(soilPh) || 6.8;
@@ -674,10 +678,11 @@ export function FarmFormModal({
             <div className="flex items-center gap-2">
               <button
                 type="submit"
-                className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white text-xs sm:text-sm font-bold rounded-xl shadow-md shadow-emerald-600/20 transition-all flex items-center gap-2 cursor-pointer"
+                disabled={isSubmitting}
+                className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white text-xs sm:text-sm font-bold rounded-xl shadow-md shadow-emerald-600/20 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <CheckCircle2 className="w-4 h-4" />
-                <span>Save Farm</span>
+                <span>{isSubmitting ? 'Saving Farm...' : 'Save Farm'}</span>
               </button>
             </div>
           </div>

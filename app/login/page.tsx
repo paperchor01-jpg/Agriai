@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -28,75 +28,108 @@ export default function LoginPage() {
   const [demoLoading, setDemoLoading] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const isSubmittingRef = useRef(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Synchronous submission lock to block rapid double-clicks and Enter-key races
+    if (isSubmittingRef.current || loading || demoLoading) {
+      return;
+    }
+    isSubmittingRef.current = true;
+
     setError('');
     setSuccessMessage('');
 
     const cleanEmail = email.trim().toLowerCase();
     if (!cleanEmail || !password) {
       setError('Please provide both email address and password.');
+      isSubmittingRef.current = false;
       return;
     }
 
     setLoading(true);
 
-    if (mode === 'signup') {
-      if (!name.trim()) {
-        setError('Please provide your full name for your farmer profile.');
-        setLoading(false);
-        return;
-      }
+    try {
+      if (mode === 'signup') {
+        if (!name.trim()) {
+          setError('Please provide your full name for your farmer profile.');
+          setLoading(false);
+          isSubmittingRef.current = false;
+          return;
+        }
 
-      const result = await signUp(name.trim(), cleanEmail, password);
-      if (!result.success) {
-        setError(result.error || 'Failed to create account. Please try again.');
-        setLoading(false);
-        return;
-      }
+        const result = await signUp(name.trim(), cleanEmail, password);
+        if (!result.success) {
+          setError(result.error || 'Failed to create account. Please try again.');
+          setLoading(false);
+          isSubmittingRef.current = false;
+          return;
+        }
 
-      if (result.session) {
-        setSuccessMessage('Account created successfully! Launching Farm Onboarding...');
+        if (result.session) {
+          setSuccessMessage('Account created successfully! Launching Farm Onboarding...');
+          // Keep lock active while navigating to dashboard
+          setTimeout(() => {
+            router.push('/dashboard');
+          }, 500);
+        } else {
+          setLoading(false);
+          isSubmittingRef.current = false;
+          setSuccessMessage(
+            'Account created! Please check your email inbox to verify your account before signing in.'
+          );
+          setMode('signin');
+        }
+      } else {
+        const result = await signIn(cleanEmail, password);
+        if (!result.success) {
+          setError(result.error || 'Invalid email or password. If you are a new farmer, please create an account first.');
+          setLoading(false);
+          isSubmittingRef.current = false;
+          return;
+        }
+
+        setSuccessMessage('Signed in successfully! Launching Dashboard...');
+        // Keep lock active while navigating to dashboard
         setTimeout(() => {
           router.push('/dashboard');
-        }, 500);
-      } else {
-        setLoading(false);
-        setSuccessMessage(
-          'Account created! Please check your email inbox to verify your account before signing in.'
-        );
-        setMode('signin');
+        }, 400);
       }
-    } else {
-      const result = await signIn(cleanEmail, password);
-      if (!result.success) {
-        setError(result.error || 'Invalid email or password. If you are a new farmer, please create an account first.');
-        setLoading(false);
-        return;
-      }
-
-      setSuccessMessage('Signed in successfully! Launching Dashboard...');
-      setTimeout(() => {
-        router.push('/dashboard');
-      }, 400);
+    } catch {
+      setError('An unexpected network error occurred. Please try again.');
+      setLoading(false);
+      isSubmittingRef.current = false;
     }
   };
 
   const handleDemoLogin = async () => {
+    if (isSubmittingRef.current || demoLoading || loading) {
+      return;
+    }
+    isSubmittingRef.current = true;
+
     setEmail('farmer@agriai.demo');
     setPassword('demo123');
     setError('');
     setDemoLoading(true);
 
-    const result = await signIn('farmer@agriai.demo', 'demo123');
-    if (result.success) {
-      setTimeout(() => {
-        router.push('/dashboard');
-      }, 400);
-    } else {
-      setError(result.error || 'Demo login failed.');
+    try {
+      const result = await signIn('farmer@agriai.demo', 'demo123');
+      if (result.success) {
+        setTimeout(() => {
+          router.push('/dashboard');
+        }, 400);
+      } else {
+        setError(result.error || 'Demo login failed.');
+        setDemoLoading(false);
+        isSubmittingRef.current = false;
+      }
+    } catch {
+      setError('Demo login failed. Please try again.');
       setDemoLoading(false);
+      isSubmittingRef.current = false;
     }
   };
 
@@ -142,12 +175,16 @@ export default function LoginPage() {
           <div className="grid grid-cols-2 p-1 mb-6 rounded-xl bg-slate-100/90 dark:bg-zinc-800/80 text-xs font-bold text-slate-600 dark:text-zinc-400">
             <button
               type="button"
+              disabled={loading || demoLoading}
               onClick={() => {
+                if (loading || demoLoading) return;
                 setMode('signin');
                 setError('');
                 setSuccessMessage('');
               }}
-              className={`py-2 rounded-lg transition-all cursor-pointer ${
+              className={`py-2 rounded-lg transition-all ${
+                loading || demoLoading ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'
+              } ${
                 mode === 'signin'
                   ? 'bg-white dark:bg-zinc-700 text-slate-900 dark:text-zinc-100 shadow-xs'
                   : 'hover:text-slate-900 dark:hover:text-zinc-200'
@@ -157,12 +194,16 @@ export default function LoginPage() {
             </button>
             <button
               type="button"
+              disabled={loading || demoLoading}
               onClick={() => {
+                if (loading || demoLoading) return;
                 setMode('signup');
                 setError('');
                 setSuccessMessage('');
               }}
-              className={`py-2 rounded-lg transition-all cursor-pointer ${
+              className={`py-2 rounded-lg transition-all ${
+                loading || demoLoading ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'
+              } ${
                 mode === 'signup'
                   ? 'bg-white dark:bg-zinc-700 text-slate-900 dark:text-zinc-100 shadow-xs'
                   : 'hover:text-slate-900 dark:hover:text-zinc-200'
@@ -306,8 +347,10 @@ export default function LoginPage() {
 
             <button
               type="submit"
-              disabled={loading}
-              className="w-full py-3 px-4 bg-slate-900 dark:bg-emerald-600 hover:bg-slate-800 dark:hover:bg-emerald-700 active:scale-98 text-white text-sm font-semibold rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer mt-2"
+              disabled={loading || demoLoading}
+              className={`w-full py-3 px-4 bg-slate-900 dark:bg-emerald-600 hover:bg-slate-800 dark:hover:bg-emerald-700 active:scale-98 text-white text-sm font-semibold rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 mt-2 ${
+                loading || demoLoading ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'
+              }`}
             >
               {loading
                 ? mode === 'signup'
@@ -326,12 +369,16 @@ export default function LoginPage() {
                 Don&apos;t have an account?{' '}
                 <button
                   type="button"
+                  disabled={loading || demoLoading}
                   onClick={() => {
+                    if (loading || demoLoading) return;
                     setMode('signup');
                     setError('');
                     setSuccessMessage('');
                   }}
-                  className="font-bold text-emerald-700 dark:text-emerald-400 hover:underline cursor-pointer"
+                  className={`font-bold text-emerald-700 dark:text-emerald-400 hover:underline ${
+                    loading || demoLoading ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'
+                  }`}
                 >
                   Create Account
                 </button>
@@ -341,12 +388,16 @@ export default function LoginPage() {
                 Already have an account?{' '}
                 <button
                   type="button"
+                  disabled={loading || demoLoading}
                   onClick={() => {
+                    if (loading || demoLoading) return;
                     setMode('signin');
                     setError('');
                     setSuccessMessage('');
                   }}
-                  className="font-bold text-emerald-700 dark:text-emerald-400 hover:underline cursor-pointer"
+                  className={`font-bold text-emerald-700 dark:text-emerald-400 hover:underline ${
+                    loading || demoLoading ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'
+                  }`}
                 >
                   Sign in
                 </button>

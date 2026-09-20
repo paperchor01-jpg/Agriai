@@ -141,3 +141,16 @@ Individual farm plots in rural India are often situated within 1-2 kilometers of
   EXPLAIN ANALYZE SELECT * FROM public.farms WHERE farmer_id = '...' ORDER BY created_at DESC LIMIT 20;
   ```
   Ensure query uses Index Scan, not Seq Scan.
+
+### 7.4 Symptom: Signup Shows "Rate Limit Exceeded" / HTTP 429
+- **Root Cause**:
+  1. Supabase Free Tier built-in SMTP has a hard default rate limit of **3 to 4 confirmation emails per hour**.
+  2. When multiple signups or double-click requests fire, Supabase Auth returns HTTP 429 (`over_email_send_rate_limit` or `rate_limit_exceeded`).
+- **Application Safeguards**:
+  - Frontend: `LoginPage` enforces synchronous `isSubmittingRef` submission locking and disables submit buttons immediately on click.
+  - Client Service: `lib/auth-service.ts` implements in-flight promise deduplication (`inFlightSignups` Map) so duplicate concurrent requests share a single network call.
+  - Error Translation: HTTP 429 and rate-limit errors are converted into user-friendly guidance explaining the temporary email rate limit and offering Demo Login.
+- **Environment Configuration Remediation**:
+  - **For Staging / QA**: In Supabase Dashboard -> `Authentication` -> `Providers` -> `Email`, toggle **Confirm email** to `OFF`. This allows immediate user creation without sending emails and completely bypasses the 3-4 emails/hour limit during testing.
+  - **For Production**: Configure Custom SMTP (Resend, SendGrid, Brevo, or AWS SES) under Supabase Dashboard -> `Project Settings` -> `Authentication` -> `SMTP Settings`. This replaces the built-in test SMTP service and unlocks high-volume transactional email delivery.
+

@@ -1,7 +1,7 @@
 import { User, Session, AuthChangeEvent } from '@supabase/supabase-js';
 import { getSupabaseClient, isSupabaseConfigured } from '@/lib/supabase/client';
 import { FarmerProfile } from '@/types';
-import { getStoredFarmer, saveStoredFarmer, DEFAULT_FARMER } from '@/lib/mock-data';
+import { getStoredFarmer, saveStoredFarmer } from '@/lib/mock-data';
 
 export interface AuthResponse {
   success: boolean;
@@ -131,6 +131,10 @@ export async function getCurrentUser(): Promise<User | null> {
   return session?.user || null;
 }
 
+// In-flight deduplication maps to prevent duplicate concurrent network requests
+const inFlightSignups = new Map<string, Promise<AuthResponse>>();
+const inFlightSignins = new Map<string, Promise<AuthResponse>>();
+
 /**
  * 1. SIGN IN with Email & Password
  */
@@ -141,6 +145,22 @@ export async function signIn(email: string, password: string): Promise<AuthRespo
     return { success: false, error: 'Please provide both email and password.' };
   }
 
+  // Deduplicate in-flight sign-in requests for identical email
+  if (inFlightSignins.has(cleanEmail)) {
+    return inFlightSignins.get(cleanEmail)!;
+  }
+
+  const signinPromise = executeSignIn(cleanEmail, password);
+  inFlightSignins.set(cleanEmail, signinPromise);
+
+  try {
+    return await signinPromise;
+  } finally {
+    inFlightSignins.delete(cleanEmail);
+  }
+}
+
+async function executeSignIn(cleanEmail: string, password: string): Promise<AuthResponse> {
   // 1. If Supabase is configured, authenticate with real Supabase Auth
   if (isSupabaseConfigured()) {
     const client = getSupabaseClient();
@@ -152,10 +172,23 @@ export async function signIn(email: string, password: string): Promise<AuthRespo
         });
 
         if (error) {
+          const rawMessage = (error.message || '').toLowerCase();
+          const errorCode = ((error as any).code || '').toLowerCase();
+          const statusCode = error.status;
+
           let userMessage = error.message;
-          if (error.message.includes('Invalid login credentials')) {
+
+          if (
+            statusCode === 429 ||
+            rawMessage.includes('rate limit') ||
+            rawMessage.includes('over_request_rate_limit') ||
+            rawMessage.includes('too many requests') ||
+            errorCode.includes('rate_limit')
+          ) {
+            userMessage = 'Too many sign-in attempts. For security purposes, please wait a few moments before trying again.';
+          } else if (rawMessage.includes('invalid login credentials')) {
             userMessage = 'Invalid email or password. If you are a new farmer, please create an account first.';
-          } else if (error.message.includes('Email not confirmed')) {
+          } else if (rawMessage.includes('email not confirmed')) {
             userMessage = 'Please verify your email address before signing in. Check your inbox for the confirmation link.';
           }
           return { success: false, error: userMessage };
@@ -245,10 +278,30 @@ export async function signUp(name: string, email: string, password: string): Pro
     return { success: false, error: 'Password must be at least 6 characters.' };
   }
 
+  // Deduplicate in-flight sign-up requests for identical email
+  if (inFlightSignups.has(cleanEmail)) {
+    return inFlightSignups.get(cleanEmail)!;
+  }
+
+  const signupPromise = executeSignUp(cleanName, cleanEmail, password);
+  inFlightSignups.set(cleanEmail, signupPromise);
+
+  try {
+    return await signupPromise;
+  } finally {
+    inFlightSignups.delete(cleanEmail);
+  }
+}
+
+async function executeSignUp(cleanName: string, cleanEmail: string, password: string): Promise<AuthResponse> {
   if (isSupabaseConfigured()) {
     const client = getSupabaseClient();
     if (client) {
       try {
+        const redirectUrl = typeof window !== 'undefined'
+          ? `${window.location.origin}/login`
+          : undefined;
+
         const { data, error } = await client.auth.signUp({
           email: cleanEmail,
           password,
@@ -257,16 +310,39 @@ export async function signUp(name: string, email: string, password: string): Pro
               name: cleanName,
               location: '',
             },
+            emailRedirectTo: redirectUrl,
           },
         });
 
         if (error) {
+          const rawMessage = (error.message || '').toLowerCase();
+          const errorCode = ((error as any).code || '').toLowerCase();
+          const statusCode = error.status;
+
           let userMessage = error.message;
-          if (error.message.includes('User already registered')) {
+
+          // Detect Rate Limiting (Supabase Free Tier default: 3-4 emails/hour on built-in SMTP, or IP rate limit)
+          if (
+            statusCode === 429 ||
+            rawMessage.includes('rate limit') ||
+            rawMessage.includes('over_email_send_rate_limit') ||
+            rawMessage.includes('email rate limit') ||
+            rawMessage.includes('over_request_rate_limit') ||
+            rawMessage.includes('too many requests') ||
+            rawMessage.includes('security purposes') ||
+            errorCode.includes('rate_limit') ||
+            errorCode.includes('over_email_send_rate_limit')
+          ) {
+            userMessage =
+              'The verification email service is temporarily rate-limited. Please wait a few minutes before trying again, or use Demo Login to explore immediately.';
+          } else if (rawMessage.includes('user already registered') || rawMessage.includes('already exists')) {
             userMessage = 'An account with this email address already exists. Please sign in instead.';
-          } else if (error.message.includes('weak_password')) {
+          } else if (rawMessage.includes('weak_password')) {
             userMessage = 'Password is too weak. Please use at least 6 characters.';
+          } else if (rawMessage.includes('valid email')) {
+            userMessage = 'Please enter a valid email address.';
           }
+
           return { success: false, error: userMessage };
         }
 

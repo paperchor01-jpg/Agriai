@@ -27,11 +27,15 @@ import { AdvisorySnippet } from '@/components/dashboard/AdvisorySnippet';
 import { YieldSnippetCard } from '@/components/dashboard/YieldSnippetCard';
 import { AnalyticsSnippetCard } from '@/components/dashboard/AnalyticsSnippetCard';
 import { WeatherCard } from '@/components/dashboard/WeatherCard';
+import { MandiPriceCard } from '@/components/dashboard/MandiPriceCard';
+import { SoilHealthProfileCard } from '@/components/dashboard/SoilHealthProfileCard';
 import { RiskCard } from '@/components/dashboard/RiskCard';
 import { AlertCard } from '@/components/dashboard/AlertCard';
 import { ActivityCard } from '@/components/dashboard/ActivityCard';
 import { Badge } from '@/components/ui/Badge';
 import { FarmOnboardingWizard } from '@/components/onboarding/FarmOnboardingWizard';
+import { soilService } from '@/lib/soil-service';
+import { NormalizedSoilProfile } from '@/lib/data-providers/types';
 import {
   DEFAULT_FARMER,
   DEFAULT_FARMS,
@@ -57,6 +61,7 @@ export default function DashboardPage() {
   const [farmWeather, setFarmWeather] = useState<WeatherData>(DEFAULT_WEATHER);
   const [farmer, setFarmer] = useState<FarmerProfile>(DEFAULT_FARMER);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [soilProfile, setSoilProfile] = useState<NormalizedSoilProfile | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -117,6 +122,14 @@ export default function DashboardPage() {
       getWeather(loc, lat, lon).then((w) => setFarmWeather(w));
     }
   }, [primaryFarm?.location, primaryFarm?.latitude, primaryFarm?.longitude, farmer.location, farmer.latitude, farmer.longitude]);
+
+  useEffect(() => {
+    if (primaryFarm?.id) {
+      soilService.getSoilProfile(primaryFarm.id).then((sp: NormalizedSoilProfile | null) => setSoilProfile(sp));
+    } else {
+      setSoilProfile(null);
+    }
+  }, [primaryFarm?.id]);
 
   const topAdvisory = useMemo(() => {
     if (!primaryFarm) return null;
@@ -377,6 +390,18 @@ export default function DashboardPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <WeatherCard weather={farmWeather} />
               <RiskCard risks={farmWeather.risks} />
+            </div>
+
+            {/* REAL AGRICULTURAL DATA: MANDI PRICES & SOIL HEALTH PROFILE */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <MandiPriceCard
+                initialCrop={typeof primaryFarm?.crop === 'object' && primaryFarm.crop ? primaryFarm.crop.name : (typeof primaryFarm?.crop === 'string' ? primaryFarm.crop : 'Wheat')}
+                initialState={farmer.state || 'Punjab'}
+              />
+              <SoilHealthProfileCard
+                soilProfile={soilProfile}
+                farmName={primaryFarm?.name}
+              />
             </div>
 
             {/* FARM ANALYTICS & RECENT ALERTS (2-Column Grid) */}

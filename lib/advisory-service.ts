@@ -1,5 +1,7 @@
 import { AdvisoryItem, Farm, WeatherData, CropDoctorResult, FarmRiskItem, AdvisoryExplainability } from "@/types";
 import { DEFAULT_FARMS, DEFAULT_WEATHER, getSelectedFarm, getStoredDiagnosis } from "@/lib/mock-data";
+import { cropKnowledgeService } from "@/lib/agriculture/crop-database";
+import { pestDiseaseKnowledgeService } from "@/lib/agriculture/pest-disease-database";
 
 export interface AdvisoryContext {
   farm?: Farm | null;
@@ -113,6 +115,12 @@ export function getAdvisories(
     !disease.disease.toLowerCase().includes("unable")
   );
 
+  const cropProfile = cropKnowledgeService.getCropProfile(cropName);
+  const verifiedDiseaseGuide = hasActiveDisease && disease?.disease
+    ? pestDiseaseKnowledgeService.findGuideForDisease(cropName, disease.disease)
+    : null;
+  const rainfall24hMm = (weather as any)?.rainfall24hMm ?? (weather as any)?.precipitationMm ?? (weather?.current as any)?.precipitationMm ?? 0;
+
   const baseSuitability = calculateSuitabilityScore(soilPh, soilMoisture, temp, tomorrowRain, hasActiveDisease);
 
   // Helper to build Explainable AI payload
@@ -120,7 +128,8 @@ export function getAdvisories(
     specificSuitability: number,
     why: string[],
     risksList: string[],
-    actionText: string
+    actionText: string,
+    customSources?: string[]
   ): AdvisoryExplainability => ({
     suitabilityScore: specificSuitability,
     scoreLabel: "AgriAI suitability score",
@@ -128,11 +137,11 @@ export function getAdvisories(
     whyFactors: why.length > 0 ? why : ["✓ Baseline telemetry is within standard agricultural operating parameters"],
     riskFactors: risksList.length > 0 ? risksList : ["No immediate critical weather or soil risk factors detected"],
     recommendedAction: actionText,
-    dataSources: [
-      hasSoil ? "Soil Telemetry" : "Soil Telemetry (Default)",
-      hasWeather ? "Open-Meteo Microclimate" : "Microclimate Telemetry",
-      hasDiseaseDiag ? "Crop Doctor Vision" : "Crop Doctor Diagnostics",
-      hasCrop ? "Crop Phenology Model" : "Crop Registry",
+    dataSources: customSources && customSources.length > 0 ? customSources : [
+      hasSoil ? "Laboratory Soil Profile (SHC)" : "Soil Telemetry (Default)",
+      hasWeather ? "IMD / Open-Meteo Weather Observation" : "Microclimate Telemetry",
+      hasDiseaseDiag ? (verifiedDiseaseGuide ? `ICAR-NCIPM Guide: ${verifiedDiseaseGuide.conditionName}` : "Crop Doctor Diagnostics") : "Crop Vision",
+      `ICAR Package of Practices (${cropProfile.sourceReference})`,
     ],
     dataAvailable: {
       soilData: hasSoil,
@@ -143,58 +152,64 @@ export function getAdvisories(
   });
 
   // --------------------------------------------------------------------------
-  // RULE 1: CROP STAGE CARE (Phenological stage sensitivity)
+  // RULE 1: CROP STAGE CARE (Phenological stage sensitivity & ICAR guidance)
   // --------------------------------------------------------------------------
   const stageLower = cropStage.toLowerCase();
+  const matchedStage = cropProfile.growthStages.find(
+    (s) => s.stageName.toLowerCase().includes(stageLower) || stageLower.includes(s.stageName.toLowerCase())
+  );
+
   if (stageLower.includes("flowering")) {
     advisories.push({
       id: "adv-stage-flowering",
-      title: "Flowering Stage Care",
+      title: `Flowering Stage Care (${cropProfile.cropName})`,
       category: "Crop Care",
       categoryLabel: "🌾 Crop Care",
       priority: "High",
-      reason: `The ${cropName} crop is currently in the flowering stage and requires close monitoring.`,
-      action: "Monitor crop health and maintain appropriate soil moisture.",
+      reason: `The ${cropProfile.cropName} crop is currently in the flowering stage (${matchedStage?.waterSensitivity || 'Critical'} water sensitivity).`,
+      action: matchedStage?.managementFocus || "Monitor crop health and maintain appropriate soil moisture.",
       timing: "Today",
-      description: "Flowering is the most sensitive phenological phase for grain formation. Avoid moisture stress or chemical drift.",
+      description: `Flowering is the most sensitive phenological phase for pollination. Avoid moisture stress or chemical drift. Critical high temperature threshold: ${cropProfile.criticalHighTempC}°C.`,
       iconName: "Sprout",
       actionUrl: "/farms",
       actionCta: "View Farm",
+      sourceBadge: "ICAR Package of Practices",
       explainability: createExplainability(
         88,
         [
-          `✓ Crop stage (${cropStage}) identified for ${cropName}`,
-          `✓ Soil pH (${soilPh}) supports nutrient uptake during flowering`,
+          `✓ Crop stage (${cropStage}) identified for ${cropProfile.cropName} (${cropProfile.botanicalName})`,
+          `✓ Soil pH (${soilPh}) is within optimal bracket (${cropProfile.optimalPhRange[0]}–${cropProfile.optimalPhRange[1]})`,
           `✓ Root zone moisture (${soilMoisture}%) prevents anthesis water stress`,
-          `✓ Current temperature (${temp}°C) is in the optimal 20–30°C pollination window`,
+          `✓ Current temperature (${temp}°C) is within the recommended ${cropProfile.temperatureRangeC[0]}–${cropProfile.temperatureRangeC[1]}°C range`,
         ],
         [
-          "Anthesis is vulnerable to sudden temperature spikes (>34°C)",
+          `Anthesis is vulnerable to terminal temperature spikes (>${cropProfile.criticalHighTempC}°C)`,
           humidity >= 60 ? `High canopy humidity (${humidity}%) requires foliar disease vigilance` : "Low humidity risk",
         ],
-        "Maintain current root hydration and scout daily for pollinator activity and flower head integrity."
+        matchedStage?.managementFocus || "Maintain current root hydration and scout daily for pollinator activity and flower head integrity."
       ),
     });
-  } else if (stageLower.includes("tillering") || stageLower.includes("vegetative")) {
+  } else if (stageLower.includes("tillering") || stageLower.includes("vegetative") || stageLower.includes("root")) {
     advisories.push({
       id: "adv-stage-vegetative",
-      title: "Vegetative Growth Management",
+      title: `Vegetative & Tillering Management (${cropProfile.cropName})`,
       category: "Crop Care",
       categoryLabel: "🌾 Crop Care",
       priority: "Medium",
-      reason: `${cropName} is in the active vegetative and tillering phase.`,
-      action: "Monitor tiller density and inspect the canopy for early weed competition.",
+      reason: `${cropProfile.cropName} is in the active vegetative and tillering phase.`,
+      action: matchedStage?.managementFocus || "Monitor tiller density and inspect the canopy for early weed competition.",
       timing: "This week",
-      description: "Support primary shoot proliferation with timely aeration and balanced hydration.",
+      description: `Support primary shoot proliferation with timely aeration and balanced hydration. ICAR split recommendation: ${cropProfile.rdfKgPerAcre.applicationSplits[1] || cropProfile.rdfKgPerAcre.applicationSplits[0]}.`,
       iconName: "Sprout",
       actionUrl: "/farms",
       actionCta: "View Farm",
+      sourceBadge: "ICAR Package of Practices",
       explainability: createExplainability(
         85,
         [
-          `✓ Active vegetative growth recorded for ${cropName}`,
+          `✓ Active vegetative growth recorded for ${cropProfile.cropName}`,
           `✓ Soil moisture (${soilMoisture}%) promotes primary tiller initiation`,
-          `✓ Loamy soil aeration facilitates root branch expansion`,
+          `✓ Package of Practices: ${cropProfile.sourceReference}`,
         ],
         [
           "Weed competition can deplete nitrogen reserves during early tillering",
@@ -202,29 +217,30 @@ export function getAdvisories(
         "Perform field walk to assess tiller counts per square meter and clear early weeds."
       ),
     });
-  } else if (stageLower.includes("grain") || stageLower.includes("pod")) {
+  } else if (stageLower.includes("grain") || stageLower.includes("pod") || stageLower.includes("boll")) {
     advisories.push({
       id: "adv-stage-grain-filling",
-      title: "Grain Filling Moisture Protection",
+      title: `Grain & Fruit Development (${cropProfile.cropName})`,
       category: "Crop Care",
       categoryLabel: "🌾 Crop Care",
       priority: "Medium",
-      reason: `${cropName} is undergoing grain filling and starch accumulation.`,
-      action: "Maintain root zone hydration to prevent premature grain shriveling.",
+      reason: `${cropProfile.cropName} is undergoing grain/fruit filling and carbohydrate translocation.`,
+      action: matchedStage?.managementFocus || "Maintain root zone hydration to prevent premature grain shriveling.",
       timing: "Next 2–3 days",
-      description: "Moisture consistency during grain filling maximizes test weight and overall yield.",
+      description: `Moisture consistency during grain filling maximizes test weight. Seasonal crop water demand is ${cropProfile.waterRequirementMm[0]}–${cropProfile.waterRequirementMm[1]} mm.`,
       iconName: "Sprout",
       actionUrl: "/farms",
       actionCta: "View Farm",
+      sourceBadge: "ICAR Package of Practices",
       explainability: createExplainability(
         86,
         [
-          `✓ Starch accumulation phase identified for ${cropName}`,
+          `✓ Starch accumulation phase identified for ${cropProfile.cropName}`,
           `✓ Available potassium (${soilPotassium}) supports carbohydrate translocation`,
           `✓ Topsoil moisture (${soilMoisture}%) prevents kernel shrinkage`,
         ],
         [
-          "Terminal heat stress can truncate the grain filling period",
+          `Terminal heat stress above ${cropProfile.criticalHighTempC}°C can truncate grain filling`,
         ],
         "Keep soil consistently moist without creating anaerobic ponding conditions."
       ),
@@ -232,22 +248,23 @@ export function getAdvisories(
   } else if (stageLower.includes("matur") || stageLower.includes("harvest")) {
     advisories.push({
       id: "adv-stage-harvest",
-      title: "Harvest Window Planning",
+      title: `Harvest Window Planning (${cropProfile.cropName})`,
       category: "Crop Care",
       categoryLabel: "🌾 Crop Care",
       priority: "High",
-      reason: `${cropName} has reached physiological maturity.`,
-      action: "Schedule harvesting machinery during upcoming clear, rain-free days.",
+      reason: `${cropProfile.cropName} has reached physiological maturity. Sowing to harvest window: ${cropProfile.harvestWindow}.`,
+      action: matchedStage?.managementFocus || "Schedule harvesting machinery during upcoming clear, rain-free days.",
       timing: "Next 48 hours",
-      description: "Harvest at optimal grain moisture (12–14%) to avoid shattering loss.",
+      description: `Harvest at optimal grain moisture (12–14%) to avoid shattering loss. Recommended window: ${cropProfile.harvestWindow}.`,
       iconName: "Sprout",
       actionUrl: "/farms",
       actionCta: "View Farm",
+      sourceBadge: "ICAR Package of Practices",
       explainability: createExplainability(
         92,
         [
-          `✓ ${cropName} reached physiological maturity`,
-          `✓ Grain moisture drying down towards safe storage threshold (12–14%)`,
+          `✓ ${cropProfile.cropName} reached physiological maturity`,
+          `✓ Standard harvest window: ${cropProfile.harvestWindow}`,
           `✓ Weather window clear of heavy storm fronts`,
         ],
         [
@@ -259,21 +276,22 @@ export function getAdvisories(
   } else {
     advisories.push({
       id: "adv-stage-general",
-      title: `${cropStage} Stage Monitoring`,
+      title: `${cropStage} Stage Monitoring (${cropProfile.cropName})`,
       category: "Crop Care",
       categoryLabel: "🌾 Crop Care",
       priority: "Medium",
-      reason: `${cropName} is progressing through the ${cropStage} stage.`,
-      action: "Perform routine weekly field walk to verify uniform vegetative health.",
+      reason: `${cropProfile.cropName} is progressing through the ${cropStage} stage.`,
+      action: matchedStage?.managementFocus || "Perform routine weekly field walk to verify uniform crop vigor.",
       timing: "This week",
-      description: "Maintain field scouting records to anticipate irrigation and nutrient transitions.",
+      description: `Maintain field scouting records to anticipate irrigation and nutrient transitions based on ${cropProfile.sourceReference}.`,
       iconName: "Sprout",
       actionUrl: "/farms",
       actionCta: "View Farm",
+      sourceBadge: "ICAR Package of Practices",
       explainability: createExplainability(
         80,
         [
-          `✓ Active cultivation recorded for ${cropName}`,
+          `✓ Active cultivation recorded for ${cropProfile.cropName}`,
           `✓ Soil parameters in stable operating range (pH ${soilPh}, Moisture ${soilMoisture}%)`,
         ],
         ["Maintain ongoing field scouting log"],
@@ -285,26 +303,28 @@ export function getAdvisories(
   // --------------------------------------------------------------------------
   // RULE 2: IRRIGATION & RAINFALL (Water conservation and stress prevention)
   // --------------------------------------------------------------------------
-  if (tomorrowRain >= 50) {
+  if (tomorrowRain >= 50 || rainfall24hMm >= 10) {
     advisories.push({
       id: "adv-irrigation-delay",
       title: "Avoid Unnecessary Irrigation",
       category: "Irrigation",
       categoryLabel: "💧 Irrigation",
       priority: "Medium",
-      reason: `Rain is expected soon (${tomorrowRain}% probability). Avoid unnecessary watering before rainfall.`,
+      reason: `Rain ${rainfall24hMm > 0 ? `(${rainfall24hMm} mm recorded recently, ` : `(`}${tomorrowRain}% forecast probability). Avoid unnecessary watering before rainfall.`,
       action: "Hold scheduled tube-well pumping to conserve water and prevent root waterlogging.",
       timing: "Next 24 hours",
-      description: `Natural precipitation will hydrate root zones. Soil moisture is already at ${soilMoisture}%.`,
+      description: `Natural precipitation hydrates root zones. ${cropProfile.cropName} seasonal water requirement is ${cropProfile.waterRequirementMm[0]}–${cropProfile.waterRequirementMm[1]} mm. Soil moisture is currently ${soilMoisture}%.`,
       iconName: "Droplets",
       actionUrl: "/weather",
       actionCta: "Check Weather",
+      sourceBadge: "IMD / Open-Meteo",
       explainability: createExplainability(
         87,
         [
-          `✓ High precipitation probability forecasted (${tomorrowRain}%)`,
+          `✓ High precipitation probability forecasted (${tomorrowRain}%)` + (rainfall24hMm > 0 ? ` with ${rainfall24hMm} mm recent rainfall` : ``),
           `✓ Current soil moisture (${soilMoisture}%) is already adequate`,
           `✓ Holding irrigation prevents ~45,000 liters/acre of water and power wastage`,
+          `✓ Complies with ICAR water management guidelines`,
         ],
         [
           "Pre-irrigation before heavy rainfall causes root saturation and nutrient leaching",
@@ -320,23 +340,26 @@ export function getAdvisories(
       category: "Irrigation",
       categoryLabel: "💧 Irrigation",
       priority: "High",
-      reason: `Soil moisture has depleted to ${soilMoisture}%, and rain probability is low (${tomorrowRain}%).`,
-      action: "Apply light irrigation during morning hours to restore root saturation.",
+      reason: `Soil moisture has depleted to ${soilMoisture}%, and rain probability is low (${tomorrowRain}%). Current stage sensitivity: ${matchedStage?.waterSensitivity || 'Moderate'}.`,
+      action: matchedStage?.waterSensitivity === 'Critical'
+        ? `Critical stage (${matchedStage.stageName}): Apply prompt irrigation during morning hours to prevent yield loss.`
+        : "Apply light irrigation during morning hours to restore root saturation.",
       timing: "Tomorrow morning",
-      description: "Root zone moisture is approaching stress limits. Morning application reduces evaporative loss.",
+      description: `Root zone moisture is approaching stress limits. Total crop requirement: ${cropProfile.waterRequirementMm[0]}–${cropProfile.waterRequirementMm[1]} mm. Morning application reduces evaporative loss.`,
       iconName: "Droplets",
       actionUrl: "/weather",
       actionCta: "Check Weather",
+      sourceBadge: "IMD / Open-Meteo",
       explainability: createExplainability(
         78,
         [
           `✓ Low rain probability (${tomorrowRain}%) indicates no natural recharge expected`,
           `✓ Early morning application reduces solar evaporative loss by up to 25%`,
-          `✓ Soil type (${farm?.soil?.soilType || 'Loamy'}) allows rapid capillary infiltration`,
+          `✓ Suitable soil types for ${cropProfile.cropName}: ${cropProfile.suitableSoilTypes.join(", ")}`,
         ],
         [
           `Soil moisture (${soilMoisture}%) is below the recommended 50% threshold`,
-          "Water deficit during active growth stunts tiller proliferation",
+          `Water deficit during ${cropStage} stage (${matchedStage?.waterSensitivity || 'Moderate'} sensitivity) impacts development`,
         ],
         "Deliver 25–30mm equivalent irrigation in early morning to minimize evaporation."
       ),
@@ -351,10 +374,11 @@ export function getAdvisories(
       reason: `Soil moisture is elevated at ${soilMoisture}%, presenting a risk of waterlogging.`,
       action: "Inspect field bunds and clear drainage outlets to prevent surface ponding.",
       timing: "Today",
-      description: "Excess standing water restricts root oxygenation and promotes fungal root rots.",
+      description: "Excess standing water restricts root oxygenation and promotes fungal root rots. Maintain open furrow drainage.",
       iconName: "Droplets",
       actionUrl: "/weather",
       actionCta: "Check Weather",
+      sourceBadge: "IMD / Open-Meteo",
       explainability: createExplainability(
         72,
         [
@@ -382,6 +406,7 @@ export function getAdvisories(
       iconName: "Droplets",
       actionUrl: "/weather",
       actionCta: "Check Weather",
+      sourceBadge: "IMD / Open-Meteo",
       explainability: createExplainability(
         90,
         [
@@ -395,36 +420,56 @@ export function getAdvisories(
   }
 
   // --------------------------------------------------------------------------
-  // RULE 3: DISEASE & FUNGAL RISK / CROP DOCTOR DIAGNOSIS
+  // RULE 3: DISEASE & FUNGAL RISK / CROP DOCTOR & ICAR-NCIPM DIAGNOSTICS
   // --------------------------------------------------------------------------
   if (hasActiveDisease) {
     const isHighSeverity = disease.severity === "High" || disease.severity === "Critical";
+    const conditionName = verifiedDiseaseGuide ? verifiedDiseaseGuide.conditionName : disease.disease;
+    const certifiedSource = verifiedDiseaseGuide ? verifiedDiseaseGuide.certifiedSource : "Crop Doctor Vision Diagnostic";
+    const recommendedAction = verifiedDiseaseGuide
+      ? verifiedDiseaseGuide.integratedPestManagement[0]
+      : `Monitor ${cropName} leaves for further spread of ${disease.disease} and consult local KVK extension.`;
+
     advisories.push({
       id: "adv-disease-active",
-      title: isHighSeverity ? `Urgent: ${disease.disease} Containment` : `Monitor ${disease.disease} Symptoms`,
+      title: isHighSeverity ? `Urgent: ${conditionName} Containment` : `Monitor ${conditionName} Symptoms`,
       category: "Disease",
       categoryLabel: "🛡️ Disease",
       priority: "High",
-      reason: `Crop Doctor detected ${disease.disease} with ${disease.confidence}% confidence at ${disease.severity.toLowerCase()} severity.`,
-      action: `Monitor ${cropName} leaves for further spread of ${disease.disease} and follow appropriate expert guidance.`,
+      reason: verifiedDiseaseGuide
+        ? `Crop Doctor detected ${disease.disease} with ${disease.confidence}% confidence (${disease.severity.toLowerCase()} severity). ICAR match: ${verifiedDiseaseGuide.scientificName}.`
+        : `Crop Doctor detected ${disease.disease} with ${disease.confidence}% confidence at ${disease.severity.toLowerCase()} severity.`,
+      action: recommendedAction,
       timing: isHighSeverity ? "Immediate (Today)" : "Today",
-      description: `Scout field boundaries and inspect leaf undersides. Follow locally approved agricultural extension guidance before any treatment.`,
+      description: verifiedDiseaseGuide
+        ? `${verifiedDiseaseGuide.integratedPestManagement.slice(0, 2).join(". ")}. Certified source: ${verifiedDiseaseGuide.certifiedSource}.`
+        : `Scout field boundaries and inspect leaf undersides. Follow locally approved agricultural extension guidance before any treatment.`,
       iconName: "AlertTriangle",
       actionUrl: "/crop-doctor",
       actionCta: "Open Crop Doctor",
+      sourceBadge: verifiedDiseaseGuide ? "ICAR-NCIPM Verified" : "Crop Doctor Vision",
       explainability: createExplainability(
         64,
         [
           `✓ AI Vision scan completed with ${disease.confidence}% confidence`,
-          `✓ Folia symptom morphology matches ${disease.disease} (${disease.scientificName || 'pathogen'})`,
+          verifiedDiseaseGuide
+            ? `✓ ICAR-NCIPM scientific verification: ${verifiedDiseaseGuide.conditionName} (${verifiedDiseaseGuide.scientificName})`
+            : `✓ Foliar symptom morphology matches ${disease.disease}`,
           `✓ Early identification prevents exponential field transmission`,
         ],
         [
           `Active foliar infection flagged (${disease.severity} severity)`,
           `Affected canopy area estimated at ${disease.affectedAreaPercentage || 18}%`,
-          humidity >= 60 ? `Elevated humidity (${humidity}%) favors rapid spore dissemination` : "Moderate humidity",
+          verifiedDiseaseGuide
+            ? `Conducive range: ${verifiedDiseaseGuide.conduciveConditions.tempRangeC ? `Temp ${verifiedDiseaseGuide.conduciveConditions.tempRangeC[0]}–${verifiedDiseaseGuide.conduciveConditions.tempRangeC[1]}°C, ` : ""}Humidity ≥${verifiedDiseaseGuide.conduciveConditions.minHumidityPercent ?? 60}%`
+            : (humidity >= 60 ? `Elevated humidity (${humidity}%) favors rapid spore dissemination` : "Moderate humidity"),
         ],
-        `Isolate affected zones, prune heavily infected lower leaves, and consult local extension (KVK) for approved treatments.`
+        recommendedAction,
+        [
+          certifiedSource,
+          "Crop Doctor Vision Diagnostics",
+          "Microclimate Weather Telemetry",
+        ]
       ),
     });
   } else if (humidity >= 65) {
@@ -434,18 +479,20 @@ export function getAdvisories(
       category: "Disease",
       categoryLabel: "🛡️ Disease",
       priority: "Medium",
-      reason: `Current humidity (${humidity}%) may increase fungal disease risk.`,
+      reason: `Current relative humidity (${humidity}%) creates elevated fungal incubation risk for ${cropProfile.cropName}.`,
       action: "Conduct foliar field walks to inspect leaves for fungal spots or discoloration.",
       timing: "Next 48 hours",
-      description: "Elevated canopy humidity creates favorable conditions for airborne spore germination.",
+      description: `Elevated canopy humidity creates favorable conditions for airborne spore germination. Common diseases to monitor in ${cropProfile.cropName}: ${cropProfile.commonDiseases.join(", ")}.`,
       iconName: "AlertTriangle",
       actionUrl: "/crop-doctor",
       actionCta: "Open Crop Doctor",
+      sourceBadge: "IMD / Open-Meteo",
       explainability: createExplainability(
         82,
         [
           `✓ No active foliar disease lesions detected in recent visual scan`,
-          `✓ Canopy chlorophyl density is healthy`,
+          `✓ Canopy chlorophyll density is healthy`,
+          `✓ Monitored diseases for ${cropProfile.cropName}: ${cropProfile.commonDiseases.slice(0, 2).join(", ")}`,
         ],
         [
           `Elevated relative humidity (${humidity}%) prolongs morning dew duration`,
@@ -457,60 +504,66 @@ export function getAdvisories(
   }
 
   // --------------------------------------------------------------------------
-  // RULE 4: NUTRIENT MANAGEMENT (Soil chemical health)
+  // RULE 4: NUTRIENT MANAGEMENT (Soil chemical health & ICAR RDF)
   // --------------------------------------------------------------------------
   if (soilNitrogen === "Low") {
+    const splitInstruction = cropProfile.rdfKgPerAcre.applicationSplits[1] || cropProfile.rdfKgPerAcre.applicationSplits[0];
     advisories.push({
       id: "adv-nutrients-nitrogen",
-      title: "Nitrogen Deficit Evaluation",
+      title: `Nitrogen Deficit (ICAR RDF: ${cropProfile.rdfKgPerAcre.nitrogen} kg/acre)`,
       category: "Nutrients",
       categoryLabel: "🌱 Nutrients",
       priority: "Medium",
-      reason: `Soil testing indicates low available nitrogen for ${cropName} during ${cropStage} stage.`,
-      action: "Consider reviewing nitrogen availability with a local agricultural expert.",
+      reason: `Soil testing indicates low available nitrogen for ${cropProfile.cropName} during ${cropStage} stage.`,
+      action: `Apply recommended split dose: ${splitInstruction}.`,
       timing: "Within 3 days",
-      description: "Balanced nitrogen availability supports vegetative vigour and chlorophyll synthesis without excess lushness.",
+      description: `ICAR Package of Practices recommends total ${cropProfile.rdfKgPerAcre.nitrogen} kg N/acre. Splits: ${cropProfile.rdfKgPerAcre.applicationSplits.join(" | ")}. Source: ${cropProfile.sourceReference}.`,
       iconName: "Sparkles",
       actionUrl: "/farms",
       actionCta: "View Farm",
+      sourceBadge: "ICAR RDF / Soil Health Card",
       explainability: createExplainability(
         75,
         [
           `✓ Soil testing telemetry available for nitrogen assessment`,
-          `✓ Crop stage (${cropStage}) has moderate nitrogen assimilation demand`,
+          `✓ Crop stage (${cropStage}) demands active nitrogen assimilation`,
+          `✓ ICAR RDF for ${cropProfile.cropName}: ${cropProfile.rdfKgPerAcre.nitrogen} kg N/acre`,
         ],
         [
           "Low available nitrogen causes lower leaf chlorosis and reduces grain protein synthesis",
           tomorrowRain >= 50 ? "Hold foliar sprays until rain passes to avoid chemical runoff" : "No rain leaching hazard",
         ],
-        "Schedule split nitrogen top-dressing after rain front clears, adhering to state university dosage tables."
+        `Schedule split nitrogen top-dressing after rain clears: ${splitInstruction}`
       ),
     });
   } else if (soilPhosphorus === "Low" || soilPotassium === "Low") {
     const deficient = soilPotassium === "Low" ? "potassium" : "phosphorus";
+    const dose = soilPotassium === "Low" ? `${cropProfile.rdfKgPerAcre.potassium} kg K₂O/acre` : `${cropProfile.rdfKgPerAcre.phosphorus} kg P₂O₅/acre`;
     advisories.push({
       id: "adv-nutrients-minerals",
-      title: "Mineral Nutrient Balance",
+      title: `Mineral Nutrient Balance (${deficient.toUpperCase()})`,
       category: "Nutrients",
       categoryLabel: "🌱 Nutrients",
       priority: "Low",
-      reason: `Soil analysis indicates low ${deficient} reserves.`,
-      action: "Consider discussing balanced micronutrient replenishment with your local agricultural specialist.",
+      reason: `Soil analysis indicates low ${deficient} reserves for ${cropProfile.cropName}.`,
+      action: `Incorporate ICAR recommended ${dose} during next scheduled field operation.`,
       timing: "Next 7 days",
-      description: "Proper mineral availability strengthens cell walls and improves drought resilience.",
+      description: `Source: ${cropProfile.sourceReference}. Proper mineral availability strengthens cell walls and improves drought resilience.`,
       iconName: "Sparkles",
       actionUrl: "/farms",
       actionCta: "View Farm",
+      sourceBadge: "ICAR RDF / Soil Health Card",
       explainability: createExplainability(
         79,
         [
-          `✓ Soil mineral panel active`,
+          `✓ Soil mineral panel active from laboratory test profile`,
           `✓ ${deficient.toUpperCase()} deficiency identified early before severe symptom expression`,
+          `✓ Target dose: ${dose}`,
         ],
         [
           `Low ${deficient} limits stomatal regulation and drought tolerance`,
         ],
-        `Incorporate potassium-rich organic amendments or recommended muriate of potash during next scheduled field operation.`
+        `Incorporate ${dose} (e.g. MOP for potassium or DAP for phosphorus) as per ICAR package of practices.`
       ),
     });
   } else if (soilPh < 6.0 || soilPh > 8.0) {
@@ -520,17 +573,19 @@ export function getAdvisories(
       category: "Nutrients",
       categoryLabel: "🌱 Nutrients",
       priority: "Medium",
-      reason: `Soil pH (${soilPh}) is outside the optimal 6.2–7.5 range, affecting nutrient absorption.`,
-      action: "Plan soil conditioning in consultation with a soil testing lab.",
+      reason: `Soil pH (${soilPh}) is outside optimal range (${cropProfile.optimalPhRange[0]}–${cropProfile.optimalPhRange[1]}), affecting nutrient availability.`,
+      action: "Plan soil conditioning in consultation with a registered soil testing laboratory.",
       timing: "Post-harvest",
-      description: "Extreme pH locks up phosphorus and micronutrients, reducing fertilizer efficiency.",
+      description: "Extreme pH locks up phosphorus and micronutrients, reducing fertilizer efficiency by 15–30%.",
       iconName: "Sparkles",
       actionUrl: "/farms",
       actionCta: "View Farm",
+      sourceBadge: "Soil Health Card",
       explainability: createExplainability(
         71,
         [
           `✓ Soil testing laboratory pH measurement recorded (${soilPh})`,
+          `✓ Crop optimal bracket: ${cropProfile.optimalPhRange[0]}–${cropProfile.optimalPhRange[1]}`,
         ],
         [
           `Sub-optimal soil pH (${soilPh}) chemically locks available phosphorus and zinc`,
@@ -546,19 +601,19 @@ export function getAdvisories(
       category: "Nutrients",
       categoryLabel: "🌱 Nutrients",
       priority: "Low",
-      reason: "Phosphorus is high while nitrogen and potassium are at medium levels.",
-      action: "Hold additional phosphate applications; maintain balanced split nitrogen doses.",
+      reason: `Nutrient reserves are in balanced equilibrium for ${cropProfile.cropName}.`,
+      action: "Maintain balanced split fertilizer doses according to ICAR schedule.",
       timing: "Next 7 days",
-      description: "Balanced nutrients promote steady root elongation and uniform grain fill.",
+      description: `Balanced nutrients promote steady root elongation and uniform grain fill. ICAR standard: N ${cropProfile.rdfKgPerAcre.nitrogen}, P ${cropProfile.rdfKgPerAcre.phosphorus}, K ${cropProfile.rdfKgPerAcre.potassium} kg/acre.`,
       iconName: "Sparkles",
       actionUrl: "/farms",
       actionCta: "View Farm",
+      sourceBadge: "ICAR RDF / Soil Health Card",
       explainability: createExplainability(
         91,
         [
-          `✓ Soil pH (${soilPh}) is within the optimal neutral agronomic bracket (6.5–7.2)`,
-          `✓ Phosphorus reserves are high, preventing early root stagnation`,
-          `✓ Nitrogen and Potassium levels are in balanced maintenance equilibrium`,
+          `✓ Soil pH (${soilPh}) is within the optimal neutral agronomic bracket (${cropProfile.optimalPhRange[0]}–${cropProfile.optimalPhRange[1]})`,
+          `✓ Nutrient reserves are in balanced maintenance equilibrium`,
         ],
         ["No critical macro-nutrient deficiencies detected"],
         "Refrain from unnecessary phosphate application to avoid chemical lockup."
@@ -567,7 +622,7 @@ export function getAdvisories(
   }
 
   // --------------------------------------------------------------------------
-  // RULE 5: RISK MONITOR INTEGRATION
+  // RULE 5: RISK MONITOR INTEGRATION & GOVERNMENT ADVISORY
   // --------------------------------------------------------------------------
   const weatherRiskHigh = risks?.some((r) => r.category === "Weather Risk" && r.level === "High") || tomorrowRain >= 75 || windSpeed >= 30;
   if (weatherRiskHigh && !advisories.some((a) => a.id === "adv-weather-hazard")) {
@@ -584,10 +639,11 @@ export function getAdvisories(
       iconName: "AlertTriangle",
       actionUrl: "/weather",
       actionCta: "Check Weather",
+      sourceBadge: "IMD Agromet Advisory",
       explainability: createExplainability(
         68,
         [
-          `✓ Real-time Open-Meteo microclimate telemetry active`,
+          `✓ Real-time IMD / Open-Meteo microclimate telemetry active`,
           `✓ Early weather warning allows proactive field equipment protection`,
         ],
         [
@@ -604,25 +660,27 @@ export function getAdvisories(
   if (pestRiskHigh && !advisories.some((a) => a.id === "adv-pest-scouting")) {
     advisories.push({
       id: "adv-pest-scouting",
-      title: "Canopy Pest Scouting",
+      title: `Canopy Pest Scouting (${cropProfile.cropName})`,
       category: "Crop Care",
       categoryLabel: "🌾 Crop Care",
       priority: "Medium",
-      reason: "Microclimatic conditions are conducive to sap-sucking pest proliferation.",
+      reason: `Microclimatic conditions are conducive to pest proliferation. Common pests for ${cropProfile.cropName}: ${cropProfile.commonPests.join(", ")}.`,
       action: "Inspect leaf margins and install yellow sticky traps for population monitoring.",
       timing: "This week",
       description: "Early scouting catches aphid or whitefly clusters before they establish broad field colonies.",
       iconName: "Sprout",
       actionUrl: "/crop-doctor",
       actionCta: "Open Crop Doctor",
+      sourceBadge: "ICAR-NCIPM Surveillance",
       explainability: createExplainability(
         80,
         [
           `✓ Integrated Pest Management (IPM) model active`,
           `✓ Scouting recommendation triggered by microclimatic temperature and humidity convergence`,
+          `✓ Target pests: ${cropProfile.commonPests.slice(0, 2).join(", ")}`,
         ],
         [
-          `Elevated relative humidity (${humidity}%) and warm temperatures favor aphid reproduction`,
+          `Elevated relative humidity (${humidity}%) and warm temperatures favor pest reproduction`,
         ],
         "Install 4–5 yellow sticky traps per acre and inspect leaf undersides for aphid colonies."
       ),

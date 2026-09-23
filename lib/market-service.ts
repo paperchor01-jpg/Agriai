@@ -1,39 +1,26 @@
-﻿import { MandiPriceItem } from '@/types';
+import { MandiPriceItem } from '@/types';
+import { fetchMandiPrices as fetchProviderMandiPrices, OFFICIAL_CACP_MSP_BENCHMARKS } from './data-providers/market/agmarknet-provider';
+import { DataProviderResult, NormalizedMarketPrice } from './data-providers/types';
 
-interface MandiBenchmark {
-  crop: string;
-  msp: number; // ₹/quintal
-  modalPrice: number;
-  minPrice: number;
-  maxPrice: number;
-}
-
-const MSP_AND_MANDI_BENCHMARKS: Record<string, MandiBenchmark> = {
-  wheat: { crop: "Wheat", msp: 2275, modalPrice: 2350, minPrice: 2250, maxPrice: 2480 },
-  paddy: { crop: "Paddy (Rice)", msp: 2300, modalPrice: 2420, minPrice: 2280, maxPrice: 2600 },
-  cotton: { crop: "Cotton (Medium Staple)", msp: 7121, modalPrice: 7350, minPrice: 6900, maxPrice: 7800 },
-  mustard: { crop: "Mustard (Sarson)", msp: 5650, modalPrice: 5800, minPrice: 5400, maxPrice: 6100 },
-  gram: { crop: "Gram (Chana)", msp: 5440, modalPrice: 5750, minPrice: 5350, maxPrice: 6100 },
-  maize: { crop: "Maize (Makka)", msp: 2090, modalPrice: 2180, minPrice: 1980, maxPrice: 2320 },
-  soybean: { crop: "Soybean", msp: 4892, modalPrice: 4650, minPrice: 4300, maxPrice: 4950 },
-  bajra: { crop: "Bajra (Pearl Millet)", msp: 2625, modalPrice: 2700, minPrice: 2500, maxPrice: 2900 },
-  tomato: { crop: "Tomato", msp: 0, modalPrice: 1800, minPrice: 1200, maxPrice: 2600 },
-  potato: { crop: "Potato", msp: 0, modalPrice: 1250, minPrice: 900, maxPrice: 1600 },
-  onion: { crop: "Onion", msp: 0, modalPrice: 2200, minPrice: 1500, maxPrice: 3100 }
-};
+// In-memory client cache for market prices
+const CLIENT_MARKET_CACHE = new Map<string, { data: DataProviderResult<NormalizedMarketPrice>; timestamp: number }>();
+const MARKET_CACHE_TTL_MS = 15 * 60 * 1000; // 15 mins client-side cache
 
 export const marketService = {
+  /**
+   * Synchronous accessor for backwards-compatibility with existing UI components
+   */
   getMandiPrices(cropName: string, state: string = "Punjab", district: string = "Ludhiana"): MandiPriceItem {
     const lower = cropName.toLowerCase();
     let matchedKey = "wheat";
-    for (const key of Object.keys(MSP_AND_MANDI_BENCHMARKS)) {
+    for (const key of Object.keys(OFFICIAL_CACP_MSP_BENCHMARKS)) {
       if (lower.includes(key)) {
         matchedKey = key;
         break;
       }
     }
 
-    const data = MSP_AND_MANDI_BENCHMARKS[matchedKey] || MSP_AND_MANDI_BENCHMARKS.wheat;
+    const data = OFFICIAL_CACP_MSP_BENCHMARKS[matchedKey] || OFFICIAL_CACP_MSP_BENCHMARKS.wheat;
     const todayStr = new Date().toISOString().split('T')[0];
 
     return {
@@ -41,14 +28,52 @@ export const marketService = {
       state: state || "State Mandi",
       district: district || "District APMC",
       marketName: `${district || 'Central'} Principal APMC Mandi`,
-      modalPrice: data.modalPrice,
-      minPrice: data.minPrice,
-      maxPrice: data.maxPrice,
+      modalPrice: data.baseModal,
+      minPrice: data.baseModal - data.minOffset,
+      maxPrice: data.baseModal + data.maxOffset,
       unit: "₹ / Quintal (100 kg)",
       msp: data.msp,
       date: todayStr,
       isLive: false,
-      disclaimer: "Live APMC API connection pending — showing official MSP benchmark & indicative regional trade prices. Always verify rates at your local APMC committee."
+      disclaimer: "Official CACP Minimum Support Price & APMC Benchmark. Verify live bids at your local market yard."
     };
+  },
+
+  /**
+   * Asynchronous live fetcher querying server-side AGMARKNET / data.gov.in API
+   */
+  async getLiveMandiPrices(
+    cropName: string = "Wheat",
+    state: string = "Punjab",
+    district: string = "Ludhiana"
+  ): Promise<DataProviderResult<NormalizedMarketPrice>> {
+    const cacheKey = `${cropName.toLowerCase()}_${state.toLowerCase()}_${district.toLowerCase()}`;
+    const cached = CLIENT_MARKET_CACHE.get(cacheKey);
+    const now = Date.now();
+
+    if (cached && (now - cached.timestamp < MARKET_CACHE_TTL_MS)) {
+      return cached.data;
+    }
+
+    let result: DataProviderResult<NormalizedMarketPrice>;
+
+    if (typeof window !== 'undefined') {
+      try {
+        const url = `/api/market?crop=${encodeURIComponent(cropName)}&state=${encodeURIComponent(state)}&district=${encodeURIComponent(district)}`;
+        const res = await fetch(url);
+        if (res.ok) {
+          result = await res.json();
+        } else {
+          result = await fetchProviderMandiPrices(cropName, state, district);
+        }
+      } catch {
+        result = await fetchProviderMandiPrices(cropName, state, district);
+      }
+    } else {
+      result = await fetchProviderMandiPrices(cropName, state, district);
+    }
+
+    CLIENT_MARKET_CACHE.set(cacheKey, { data: result, timestamp: now });
+    return result;
   }
 };

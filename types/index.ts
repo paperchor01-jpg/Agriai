@@ -153,6 +153,7 @@ export interface AdvisoryItem {
   actionUrl?: string;
   actionCta?: string;
   explainability?: AdvisoryExplainability;
+  sourceBadge?: string;
 }
 
 export interface CurrentWeather {

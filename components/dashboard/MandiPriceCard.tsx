@@ -7,6 +7,7 @@ import { NormalizedMarketPrice } from '@/lib/data-providers/types';
 interface MandiPriceCardProps {
   initialCrop?: string;
   initialState?: string;
+  initialDistrict?: string;
 }
 
 const SUPPORTED_CROPS = [
@@ -19,10 +20,16 @@ const SUPPORTED_CROPS = [
   { id: 'Gram', label: '🫘 Chana (Gram)' },
 ];
 
-export function MandiPriceCard({ initialCrop = 'Wheat', initialState = 'Punjab' }: MandiPriceCardProps) {
+export function MandiPriceCard({
+  initialCrop = 'Wheat',
+  initialState = 'Punjab',
+  initialDistrict = 'Ludhiana',
+}: MandiPriceCardProps) {
   const [commodity, setCommodity] = useState(initialCrop);
   const [stateName, setStateName] = useState(initialState);
+  const [districtName, setDistrictName] = useState(initialDistrict);
   const [prices, setPrices] = useState<NormalizedMarketPrice[]>([]);
+  const [metadata, setMetadata] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -30,13 +37,26 @@ export function MandiPriceCard({ initialCrop = 'Wheat', initialState = 'Punjab' 
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/market?commodity=${encodeURIComponent(commodity)}&state=${encodeURIComponent(stateName)}`);
+      const queryParams = new URLSearchParams({
+        commodity,
+        state: stateName,
+      });
+      if (districtName) {
+        queryParams.set('district', districtName);
+      }
+      const res = await fetch(`/api/market?${queryParams.toString()}`);
       if (!res.ok) {
         throw new Error(`Market query failed: ${res.statusText}`);
       }
       const data = await res.json();
-      if (data.success && Array.isArray(data.data)) {
-        setPrices(data.data);
+      if (data.success) {
+        const priceList = Array.isArray(data.data)
+          ? data.data
+          : (data.data ? [data.data] : (data.primaryPrice ? [data.primaryPrice] : []));
+        setPrices(priceList);
+        if (data.metadata) {
+          setMetadata(data.metadata);
+        }
       } else {
         setPrices([]);
       }
@@ -50,7 +70,7 @@ export function MandiPriceCard({ initialCrop = 'Wheat', initialState = 'Punjab' 
 
   useEffect(() => {
     fetchPrices();
-  }, [commodity, stateName]);
+  }, [commodity, stateName, districtName]);
 
   const primaryRecord = prices[0];
 
@@ -69,15 +89,30 @@ export function MandiPriceCard({ initialCrop = 'Wheat', initialState = 'Punjab' 
             </div>
           </div>
 
-          <button
-            onClick={fetchPrices}
-            disabled={isLoading}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors disabled:opacity-50"
-            title="Refresh market rates"
-            aria-label="Refresh market rates"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-          </button>
+          <div className="flex items-center gap-2">
+            {metadata?.status === 'LIVE' ? (
+              <span className="text-[10px] px-2 py-0.5 font-bold rounded-md bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300 border border-emerald-300/40">
+                LIVE
+              </span>
+            ) : metadata?.status === 'FALLBACK' ? (
+              <span className="text-[10px] px-2 py-0.5 font-semibold rounded-md bg-amber-50 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-300/40">
+                BENCHMARK
+              </span>
+            ) : (
+              <span className="text-[10px] px-2 py-0.5 font-semibold rounded-md bg-slate-100 text-slate-600 dark:bg-zinc-800 dark:text-zinc-400">
+                MSP BASE
+              </span>
+            )}
+            <button
+              onClick={fetchPrices}
+              disabled={isLoading}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors disabled:opacity-50"
+              title="Refresh market rates"
+              aria-label="Refresh market rates"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
         </div>
 
         {/* Commodity Selector Pill Row */}
@@ -183,6 +218,13 @@ export function MandiPriceCard({ initialCrop = 'Wheat', initialState = 'Punjab' 
                   )}
                 </span>
               </div>
+            )}
+
+            {/* Transparent Disclaimer / Guidance */}
+            {primaryRecord.disclaimer && (
+              <p className="mt-2.5 text-[10px] sm:text-[11px] text-slate-500 dark:text-zinc-400 italic">
+                ℹ️ {primaryRecord.disclaimer}
+              </p>
             )}
           </div>
         ) : (

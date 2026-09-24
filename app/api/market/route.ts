@@ -31,15 +31,32 @@ export async function GET(request: Request) {
     // 2. Fetch normalized mandi price
     const result = await fetchMandiPrices(commodity, state, district);
 
-    logger.debug('Market prices fetched successfully', {
+    const isLive = result.metadata.status === 'LIVE';
+    logger.info('Market API query completed', {
       commodity,
+      state,
       district,
       provider: result.metadata.provider,
       status: result.metadata.status,
+      isLive,
+      fallbackUsed: !isLive,
+      fallbackReason: result.metadata.fallbackReason,
+      recordsCount: result.metadata.recordsCount ?? (result.data ? 1 : 0),
       durationMs: Date.now() - startTime,
     });
 
-    return NextResponse.json(result, { headers: rateLimit.headers });
+    // Provide both array and object representations to guarantee compatibility across all frontends and services
+    const records = Array.isArray(result.data)
+      ? result.data
+      : (result.data ? [result.data] : []);
+
+    const responsePayload = {
+      ...result,
+      data: records,
+      primaryPrice: records[0] || null,
+    };
+
+    return NextResponse.json(responsePayload, { headers: rateLimit.headers });
   } catch (error) {
     logger.error('Market price API handler failure', {
       error: error instanceof Error ? error.message : String(error),

@@ -397,6 +397,7 @@ export default function DashboardPage() {
               <MandiPriceCard
                 initialCrop={typeof primaryFarm?.crop === 'object' && primaryFarm.crop ? primaryFarm.crop.name : (typeof primaryFarm?.crop === 'string' ? primaryFarm.crop : 'Wheat')}
                 initialState={farmer.state || 'Punjab'}
+                initialDistrict={primaryFarm?.district || farmer.district || 'Ludhiana'}
               />
               <SoilHealthProfileCard
                 soilProfile={soilProfile}

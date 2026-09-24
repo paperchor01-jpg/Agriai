@@ -24,6 +24,10 @@ export interface FreshnessMetadata {
   status: ProviderStatus;
   isStale: boolean;
   ttlSeconds: number;
+  fallbackReason?: string;    // Diagnosis code / reason for fallback
+  recordsCount?: number;      // Count of live records returned
+  filterLevel?: 'district' | 'state' | 'national_benchmark';
+  isLive?: boolean;           // Explicit live flag
 }
 
 export interface DataQualityReport {
@@ -99,6 +103,7 @@ export interface NormalizedMarketPrice {
   msp?: number;           // Government Minimum Support Price benchmark
   priceDate: string;      // YYYY-MM-DD
   unit: string;           // "₹ / Quintal"
+  disclaimer?: string;    // Transparent user-facing guidance
   trend7d?: {
     direction: 'UP' | 'DOWN' | 'STABLE';
     changePercent: number;

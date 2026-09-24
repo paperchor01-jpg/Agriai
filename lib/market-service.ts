@@ -62,7 +62,11 @@ export const marketService = {
         const url = `/api/market?crop=${encodeURIComponent(cropName)}&state=${encodeURIComponent(state)}&district=${encodeURIComponent(district)}`;
         const res = await fetch(url);
         if (res.ok) {
-          result = await res.json();
+          const json = await res.json();
+          result = {
+            ...json,
+            data: json.primaryPrice || (Array.isArray(json.data) ? json.data[0] : json.data),
+          };
         } else {
           result = await fetchProviderMandiPrices(cropName, state, district);
         }

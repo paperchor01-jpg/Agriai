@@ -105,24 +105,34 @@ function buildDataGovUrls(
   limit: number = 10
 ): { fetchUrl: string; sanitizedEndpoint: string } {
   const base = `${DATA_GOV_API_BASE}/${resourceId}`;
-  const params: Record<string, string> = {
-    format: 'json',
-    limit: String(limit),
-  };
-  if (filters.state) params['filters[state]'] = filters.state;
-  if (filters.district) params['filters[district]'] = filters.district;
-  if (filters.commodity) params['filters[commodity]'] = filters.commodity;
+  const sanitizedApiKey = (apiKey || '').trim().replace(/^['"]+|['"]+$/g, '').trim();
+
+  // Build filter query parts with literal brackets for PHP/Drupal backend on data.gov.in,
+  // while ensuring values are safely URL-encoded
+  const queryParts: string[] = [
+    'format=json',
+    `limit=${encodeURIComponent(String(limit))}`,
+  ];
+
+  if (filters.state) {
+    queryParts.push(`filters[state]=${encodeURIComponent(filters.state)}`);
+  }
+  if (filters.district) {
+    queryParts.push(`filters[district]=${encodeURIComponent(filters.district)}`);
+  }
+  if (filters.commodity) {
+    queryParts.push(`filters[commodity]=${encodeURIComponent(filters.commodity)}`);
+  }
 
   // Sanitized endpoint string (NO api-key present)
-  const sanitizedQuery = new URLSearchParams(params).toString();
-  const sanitizedEndpoint = `${base}?${sanitizedQuery}`;
+  const sanitizedEndpoint = `${base}?${queryParts.join('&')}`;
 
   // Authorized fetch URL
-  const fetchQuery = new URLSearchParams({
-    'api-key': apiKey.trim(),
-    ...params,
-  }).toString();
-  const fetchUrl = `${base}?${fetchQuery}`;
+  const fetchParts = [
+    `api-key=${encodeURIComponent(sanitizedApiKey)}`,
+    ...queryParts,
+  ];
+  const fetchUrl = `${base}?${fetchParts.join('&')}`;
 
   return { fetchUrl, sanitizedEndpoint };
 }
@@ -166,7 +176,12 @@ async function executeDataGovRequest(
   try {
     const res = await resilientFetch(
       fetchUrl,
-      { headers: { Accept: 'application/json' } },
+      {
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'AgriAI-Platform/1.0 (Smart Crop Advisory System; Node.js; +https://agriai.in)',
+        },
+      },
       {
         maxRetries: 1,
         timeoutMs: 6000,
@@ -177,6 +192,15 @@ async function executeDataGovRequest(
     const durationMs = Date.now() - startTime;
     const statusCode = res.status;
     const statusText = res.statusText || 'OK';
+
+    // Consume response body on HTTP error paths so connection is properly drained
+    if (!res.ok) {
+      try {
+        await res.text();
+      } catch {
+        // Ignore stream consumption error on failure paths
+      }
+    }
 
     // Case C: Authentication / Authorization failure (401/403)
     if (statusCode === 401 || statusCode === 403) {
@@ -394,18 +418,19 @@ export async function fetchMandiPrices(
   const todayStr = now.toISOString().split('T')[0];
   const expiresAt = new Date(now.getTime() + MARKET_CACHE_TTL_SECONDS * 1000).toISOString();
 
-  const apiKey = process.env.DATA_GOV_IN_API_KEY;
+  const rawApiKey = (process.env.DATA_GOV_IN_API_KEY || '').trim();
+  const apiKey = rawApiKey.replace(/^['"]+|['"]+$/g, '').trim();
   const commodityKey = commodityQuery.trim().toLowerCase();
 
   // Normalize casing for Indian government database lookups
   const normalizedState = state.trim().charAt(0).toUpperCase() + state.trim().slice(1);
   const normalizedDistrict = district.trim().charAt(0).toUpperCase() + district.trim().slice(1);
 
-  let lastCase: ApiDiagnosisCase = apiKey && apiKey.trim() !== '' ? 'CASE_B_ZERO_RECORDS' : 'CONFIG_REQUIRED';
+  let lastCase: ApiDiagnosisCase = apiKey && apiKey !== '' ? 'CASE_B_ZERO_RECORDS' : 'CONFIG_REQUIRED';
   let successfulAttempt: QueryAttemptResult | null = null;
 
   // 1. LIVE DATA QUERY (When DATA_GOV_IN_API_KEY is configured)
-  if (apiKey && apiKey.trim() !== '') {
+  if (apiKey && apiKey !== '') {
     const commodityCandidates = getCommodityFilterCandidates(commodityQuery);
 
     // Step 1: District-level queries
